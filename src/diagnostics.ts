@@ -68,6 +68,7 @@ export class Diagnostics {
       method?: 'GET' | 'POST' | 'other';
       session?: string;
       phase?: string;
+      fields?: string[];
       durationMs?: number;
       statusCode?: number;
       cause?: FailureCause | ErrorKind | 'ok';
@@ -87,6 +88,9 @@ export class Diagnostics {
     if (values.method) output.method = values.method;
     if (values.session) output.session = values.session;
     if (values.phase) output.phase = values.phase;
+    // Field paths only, never their values.
+    const fields = values.fields?.filter(field => /^[\w.]{1,80}$/.test(field)).slice(0, 5);
+    if (fields?.length) output.fields = fields.join(',');
     if (Number.isFinite(values.durationMs)) output.durationMs = Math.round(values.durationMs!);
     if (Number.isInteger(values.statusCode)) output.statusCode = values.statusCode!;
     if (values.cause) output.cause = values.cause;

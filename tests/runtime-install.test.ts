@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { recoverInstalledService, replaceRuntime } from '../src/service.js';
+import { recoverInstalledService, replaceRuntime, rotateLog } from '../src/service.js';
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -112,4 +112,20 @@ test('a config restore failure keeps the recovered service running', async () =>
     }),
   ).rejects.toThrow('Previous service is running');
   expect(running).toBe(true);
+});
+
+test('a log past its limit becomes <log>.1 before the service starts again', () => {
+  const root = mkdtempSync(join(tmpdir(), 'jev-runway-log-'));
+  temporaryDirectories.push(root);
+  const log = join(root, 'jev-runway.log');
+  rotateLog(log, 4);
+  expect(existsSync(log)).toBe(false);
+  writeFileSync(log, 'four');
+  rotateLog(log, 4);
+  expect(readFileSync(log, 'utf8')).toBe('four');
+  writeFileSync(log, 'longer');
+  writeFileSync(`${log}.1`, 'oldest');
+  rotateLog(log, 4);
+  expect(existsSync(log)).toBe(false);
+  expect(readFileSync(`${log}.1`, 'utf8')).toBe('longer');
 });

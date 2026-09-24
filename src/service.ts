@@ -9,6 +9,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir, platform } from 'node:os';
@@ -246,6 +247,18 @@ export function replaceRuntime(
   } catch (error) {
     rmSync(staged, { recursive: true, force: true });
     throw error;
+  }
+}
+
+/**
+ * The service appends to its log for as long as it runs, and it holds the file open, so the log can
+ * only be replaced while the service is stopped: a log past `limit` becomes `<log>.1`.
+ */
+export function rotateLog(log: string, limit = 10 * 1024 * 1024): void {
+  try {
+    if (statSync(log).size > limit) renameSync(log, `${log}.1`);
+  } catch {
+    // No log yet, or it cannot be moved: the service appends to it as before.
   }
 }
 

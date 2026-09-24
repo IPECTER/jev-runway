@@ -2,6 +2,7 @@ import { afterEach, expect, it } from 'bun:test';
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import { createCodexProxy } from '../src/codex-proxy.js';
+import { Diagnostics } from '../src/diagnostics.js';
 import { rateLimitHeaders } from '../src/upstream-websocket.js';
 
 const cleanup: (() => void)[] = [];
@@ -18,7 +19,7 @@ async function listen(server: Server): Promise<string> {
 }
 
 /** A Responses upstream that answers over WebSocket the way ChatGPT's Codex backend does, and over HTTP. */
-function upstream(options: { refuseContinuation?: boolean } = {}) {
+function upstream(options: { refuseContinuation?: boolean; reasoning?: boolean } = {}) {
   const frames: Record<string, unknown>[] = [];
   const http: string[] = [];
   let responses = 0;
@@ -43,13 +44,14 @@ function upstream(options: { refuseContinuation?: boolean } = {}) {
           return;
         }
         const id = `resp_${++responses}`;
-        // The server labels its output with metadata that Codex drops from its history.
+        // The server labels its output with metadata, annotations, and log probabilities that Codex
+        // drops from its history.
         const item = {
           type: 'message',
           id: `msg_${responses}`,
           status: 'completed',
           role: 'assistant',
-          content: [{ type: 'output_text', text: `reply ${responses}` }],
+          content: [{ type: 'output_text', annotations: [], logprobs: [], text: `reply ${responses}` }],
           metadata: { turn_id: 't' },
           internal_chat_message_metadata_passthrough: { create_time: 1 },
         };
@@ -60,11 +62,16 @@ function upstream(options: { refuseContinuation?: boolean } = {}) {
           }),
         );
         socket.send(JSON.stringify({ type: 'response.created', response: { id, status: 'in_progress' } }));
-        socket.send(JSON.stringify({ type: 'response.output_item.done', output_index: 0, item }));
+        // Reasoning comes first, with an empty content list that Codex leaves out of its history.
+        const output = options.reasoning
+          ? [{ type: 'reasoning', id: `rs_${responses}`, summary: [], content: [], encrypted_content: 'sealed' }, item]
+          : [item];
+        for (const [index, done] of output.entries())
+          socket.send(JSON.stringify({ type: 'response.output_item.done', output_index: index, item: done }));
         socket.send(
           JSON.stringify({
             type: 'response.completed',
-            response: { id, status: 'completed', output: [item], usage: { input_tokens: 100, output_tokens: 5 } },
+            response: { id, status: 'completed', output, usage: { input_tokens: 100, output_tokens: 5 } },
           }),
         );
       },
@@ -131,6 +138,15 @@ it('sends the first request whole and a continuation with only its new items, ov
   expect(status.websocketBytesSent).toBeLessThan(status.websocketBytesWhole);
 });
 
+it('continues after reasoning that Codex put back without its empty content', async () => {
+  const server = upstream({ reasoning: true });
+  const proxy = await listen(createCodexProxy({ upstream: server.url, websocket: true }));
+  await post(proxy, request([user('Hi')]));
+  const reasoning = { type: 'reasoning', summary: [], encrypted_content: 'sealed' };
+  await post(proxy, request([user('Hi'), reasoning, reply(1), user('More')]));
+  expect(server.frames[1]).toMatchObject({ previous_response_id: 'resp_1', input: [user('More')] });
+});
+
 it('sends the whole history again when a request does not continue the previous one', async () => {
   const server = upstream();
   const proxy = await listen(createCodexProxy({ upstream: server.url, websocket: true }));
@@ -142,6 +158,22 @@ it('sends the whole history again when a request does not continue the previous 
   // So does a request whose settings changed.
   await post(proxy, { ...request([user('Hi'), reply(1), user('More'), reply(2), user('Again')]), model: 'gpt-other' });
   expect(server.frames[2]).not.toHaveProperty('previous_response_id');
+});
+
+it('names the fields of an output Codex put back differently, without their values', async () => {
+  const server = upstream();
+  const lines: string[] = [];
+  const diagnostics = new Diagnostics({ JEV_RUNWAY_DEBUG: '1' }, line => lines.push(line));
+  const proxy = await listen(createCodexProxy({ upstream: server.url, websocket: true, diagnostics }));
+  await post(proxy, request([user('Hi')]));
+  const edited = { ...reply(1), content: [{ type: 'output_text', text: 'secret edit' }] };
+  await post(proxy, request([user('Hi'), edited, user('More')]));
+  expect(server.frames[1]).not.toHaveProperty('previous_response_id');
+  const upstreamLines = lines.map(line => JSON.parse(line)).filter(line => line.kind === 'upstream');
+  // One line per request, carrying how it went up.
+  expect(upstreamLines.map(line => line.phase)).toEqual(['websocket_full_first', 'websocket_full_outputs']);
+  expect(upstreamLines[1].fields).toBe('message.content.0.text');
+  expect(lines.join('')).not.toContain('secret edit');
 });
 
 it('falls back to HTTP when the upstream takes no WebSocket or refuses a continuation', async () => {

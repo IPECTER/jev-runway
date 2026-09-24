@@ -352,6 +352,7 @@ export function createCodexProxy(options: ProxyOptions) {
       // The trimmed history goes on over the session's WebSocket when the upstream takes one: after the
       // first request, only what follows the previous response is uploaded. Anything else goes over HTTP.
       let viaSocket: Response | undefined;
+      let socketTrace: { phase?: string; fields?: string[] } = {};
       if (
         sockets &&
         prepared?.sessionId &&
@@ -366,11 +367,10 @@ export function createCodexProxy(options: ProxyOptions) {
           if (result.reason) metrics.recordWebsocketWhole(result.reason, counters);
           metrics.increment(counters, 'websocketBytesSent', result.sentBytes);
           metrics.increment(counters, 'websocketBytesWhole', result.wholeBytes);
-          diagnostics.emit('upstream', {
-            ...trace,
+          socketTrace = {
             phase: result.reason ? `websocket_full_${result.reason}` : 'websocket_incremental',
-            statusCode: 200,
-          });
+            fields: result.fields,
+          };
         } else metrics.recordWebsocketFallback(result.fallback, counters);
       }
       let upstreamResponse = viaSocket ?? (await send(prepared?.body ?? received, compacted));
@@ -391,7 +391,7 @@ export function createCodexProxy(options: ProxyOptions) {
         upstreamResponse = await send(received, false);
         metrics.recordUpstreamResponse(counters);
       }
-      diagnostics.emit('upstream', { ...trace, statusCode: upstreamResponse.status });
+      diagnostics.emit('upstream', { ...trace, ...socketTrace, statusCode: upstreamResponse.status });
       if (!upstreamResponse.ok) recordError('upstream_http');
       response.writeHead(upstreamResponse.status, responseHeaders(upstreamResponse));
       if (!upstreamResponse.body) {

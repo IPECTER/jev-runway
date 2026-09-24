@@ -186,6 +186,8 @@ jev-runway install --upstream http://127.0.0.1:8787/v1
   tail -n 50 ~/.codex/log/jev-runway.log
   ```
 
+  로그가 10MB를 넘으면 다음 `install`이나 `update` 때 `jev-runway.log.1`로 옮겨지고, 새 로그가 시작됩니다.
+
 ## 한계
 
 - Runway는 Codex의 Responses 요청만 정리하며, 그중에서도 텍스트로 된 도구 출력만 정리합니다. 이미지를 비롯한 미디어는 그대로 둡니다.

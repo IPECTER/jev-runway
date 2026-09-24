@@ -186,6 +186,8 @@ jev-runway install --upstream http://127.0.0.1:8787/v1
   tail -n 50 ~/.codex/log/jev-runway.log
   ```
 
+  When the log passes 10 MB, the next `install` or `update` moves it to `jev-runway.log.1` and starts a new one.
+
 ## Limits
 
 - Only Codex's Responses requests are trimmed, and only text tool output; images and other media stay as they are.

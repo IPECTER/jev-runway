@@ -35,6 +35,7 @@ import {
   RUNTIME_DIR,
   recoverInstalledService,
   replaceRuntime,
+  rotateLog,
   type ServiceManager,
   serviceManager,
   version,
@@ -262,6 +263,7 @@ export async function install(args: string[]): Promise<void> {
       service.render(RUNTIME_BINARY, logFile, upstream, codexHome(), installDebug(options.debug, previousService)),
     );
     stop();
+    rotateLog(logFile);
     if (!(await startService())) throw new Error('Background service did not become healthy.');
     progress.message('Routing Codex through Runway');
     saveState(saved?.before ?? before, upstream, applied);

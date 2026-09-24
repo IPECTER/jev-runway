@@ -42,9 +42,18 @@ type Item = Record<string, unknown>;
 export type SocketMode = 'incremental' | 'full';
 /** Why a request went whole: the first on its connection, other settings, a changed history, other outputs, or nothing new. */
 export type WholeReason = 'first' | 'settings' | 'history' | 'outputs' | 'no_new_items';
+/** For other outputs, which of their fields differ. */
+type Whole = { reason: WholeReason; fields?: string[] };
 /** `sentBytes` went up the socket; `wholeBytes` is what the whole request would have taken. */
 export type SocketResult =
-  | { response: Response; mode: SocketMode; reason?: WholeReason; sentBytes: number; wholeBytes: number }
+  | {
+      response: Response;
+      mode: SocketMode;
+      reason?: WholeReason;
+      fields?: string[];
+      sentBytes: number;
+      wholeBytes: number;
+    }
   | { fallback: string };
 type Handler = { onMessage(text: string): void; onClose(reason: string): void };
 type Last = { properties: string; input: unknown[]; outputs: Item[]; responseId: string };
@@ -63,10 +72,12 @@ const canonical = (value: unknown): string =>
 /**
  * An output item as the model produced it. The server also labels it with an id, a status, and
  * metadata that Codex drops when it puts the item back into its history, and Codex ignores them
- * when it decides whether a request continues the previous one.
+ * when it decides whether a request continues the previous one. Codex also keeps only the text of
+ * each output text, without its annotations or log probabilities, and a reasoning item's content
+ * only when it holds reasoning text.
  */
-const content = (item: unknown): string => {
-  if (!item || typeof item !== 'object' || Array.isArray(item)) return canonical(item);
+const produced = (item: unknown): unknown => {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
   const {
     id: _id,
     status: _status,
@@ -74,8 +85,32 @@ const content = (item: unknown): string => {
     internal_chat_message_metadata_passthrough: _passthrough,
     ...rest
   } = item as Item;
-  return canonical(rest);
+  if (
+    rest.type === 'reasoning' &&
+    !(Array.isArray(rest.content) && rest.content.some(part => (part as Item | null)?.type === 'reasoning_text'))
+  )
+    delete rest.content;
+  if (Array.isArray(rest.content))
+    rest.content = rest.content.map(part => {
+      if (!part || typeof part !== 'object') return part;
+      const { annotations: _annotations, logprobs: _logprobs, ...kept } = part as Item;
+      return kept;
+    });
+  return rest;
 };
+const content = (item: unknown): string => canonical(produced(item));
+
+/** Where two items differ, as field paths under the item's type, without values, so the debug log can say why. */
+function differences(a: unknown, b: unknown, path = 'item', found: string[] = []): string[] {
+  if (found.length >= 5) return found;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) {
+    if (canonical(a) !== canonical(b)) found.push(path);
+    return found;
+  }
+  for (const key of new Set([...Object.keys(a), ...Object.keys(b)]))
+    differences((a as Item)[key], (b as Item)[key], `${path}.${key}`, found);
+  return found;
+}
 
 /** The `codex.rate_limits` event as the HTTP headers Codex reads its usage limits from. */
 export function rateLimitHeaders(event: Item): Record<string, string> {
@@ -215,12 +250,12 @@ export class UpstreamSockets {
     const input = Array.isArray(payload.input) ? payload.input : [];
     const properties = canonical(Object.fromEntries(Object.entries(payload).filter(([key]) => !PER_REQUEST.has(key))));
     const last = connection.last;
-    const reason: WholeReason | undefined = !last
-      ? 'first'
+    const whole: Whole | undefined = !last
+      ? { reason: 'first' }
       : last.properties !== properties
-        ? 'settings'
+        ? { reason: 'settings' }
         : continuation(last, input);
-    const incremental = reason === undefined;
+    const incremental = whole === undefined;
     const turnState = first(requestHeaders['x-codex-turn-state']);
     const metadata = {
       ...(payload.client_metadata as Item | undefined),
@@ -250,7 +285,7 @@ export class UpstreamSockets {
     return {
       response: result.response,
       mode: incremental ? 'incremental' : 'full',
-      ...(reason && { reason }),
+      ...whole,
       sentBytes: Buffer.byteLength(text),
       wholeBytes,
     };
@@ -372,12 +407,20 @@ export class UpstreamSockets {
 }
 
 /** Why `input` is not the previous request, its response, and new items after them; undefined when it is. */
-function continuation(last: Last, input: unknown[]): WholeReason | undefined {
+function continuation(last: Last, input: unknown[]): Whole | undefined {
   for (let index = 0; index < last.input.length; index++)
-    if (canonical(last.input[index]) !== canonical(input[index])) return 'history';
-  for (let index = 0; index < last.outputs.length; index++)
-    if (content(last.outputs[index]) !== content(input[last.input.length + index])) return 'outputs';
-  return input.length > last.input.length + last.outputs.length ? undefined : 'no_new_items';
+    if (canonical(last.input[index]) !== canonical(input[index])) return { reason: 'history' };
+  for (let index = 0; index < last.outputs.length; index++) {
+    const sent = input[last.input.length + index];
+    if (content(last.outputs[index]) !== content(sent)) {
+      const type = last.outputs[index]?.type;
+      return {
+        reason: 'outputs',
+        fields: differences(produced(last.outputs[index]), produced(sent), typeof type === 'string' ? type : 'item'),
+      };
+    }
+  }
+  return input.length > last.input.length + last.outputs.length ? undefined : { reason: 'no_new_items' };
 }
 
 const first = (value: string | string[] | undefined) => (Array.isArray(value) ? value[0] : value);

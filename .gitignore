@@ -1,0 +1,39 @@
+# Dependencies and generated files
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+__pycache__/
+*.pyc
+.venv/
+
+# Credentials and local environment
+.env
+.env.*
+!.env.example
+credentials.json
+
+# Local agent and deployment files
+/AGENTS.md
+/.agents/
+/.codex/
+/.deploy/
+
+# Logs, editor files, and archives
+*.log
+*.tgz
+*.zip
+.DS_Store
+.idea/
+.vscode/
+
+# Generated benchmark runs; retain checked-in comparison evidence
+/runway-benchmark.json
+/comparison-benchmark.json
+/runway-comparison.json
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Local search configuration for graft (not part of the project)
+/.ignore

@@ -1,0 +1,51 @@
+{
+  "name": "jev-runway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A Jev-powered proxy for Codex that saves tokens by trimming stale tool output.",
+  "keywords": [
+    "jev",
+    "codex",
+    "proxy",
+    "context-compression",
+    "token-optimization",
+    "ai-gateway",
+    "bun",
+    "openai",
+    "responses"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "author": "IPECTER",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/IPECTER/jev-runway.git"
+  },
+  "homepage": "https://github.com/IPECTER/jev-runway#readme",
+  "bugs": {
+    "url": "https://github.com/IPECTER/jev-runway/issues"
+  },
+  "packageManager": "bun@1.4.2",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "build": "rm -rf dist && bun scripts/release.ts --local",
+    "typecheck": "bunx --bun tsc --noEmit",
+    "test": "bun test",
+    "start": "bun run src/cli.ts start",
+    "status": "bun run src/cli.ts status",
+    "benchmark": "bun run scripts/benchmark.ts",
+    "benchmark:replay": "bun run scripts/benchmark-replay.ts",
+    "check": "bun run typecheck && bun run lint && bun run build && bun test",
+    "release": "bun scripts/release.ts",
+    "format": "biome check --write .",
+    "lint": "biome check ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.14",
+    "@clack/prompts": "1.8.1",
+    "@types/bun": "^1.3.6",
+    "typescript": "7.0.2"
+  }
+}

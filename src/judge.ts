@@ -27,6 +27,8 @@ export interface Step {
 export interface Need {
   call: number;
   output: number;
+  /** Jev's own probability for the call, when Runway kept the call's record whatever Jev said. */
+  jevCall?: number;
 }
 /** Keep the step, trim its output to a head and a note, or remove call and output. */
 export type Action = 'keep' | 'trim' | 'remove';

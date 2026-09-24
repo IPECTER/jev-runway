@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { paint, renderHelp, renderStatus, wrap } from '../src/terminal.js';
+import { paint, renderHelp, renderStatus, renderTrimSessions, renderTrims, wrap } from '../src/terminal.js';
 
 const plain = { color: false, width: 90 };
 const credentials = { configured: true, provider: 'gateway', source: 'environment', apiKey: 'private-key' };
@@ -145,4 +145,37 @@ test('help groups commands by task and colors only when asked', () => {
     expect(help).toContain(text);
   expect(help).not.toContain('\x1b');
   expect(renderHelp(paint(true))).toContain('\x1b[1m');
+});
+
+test('trims read as what was cut, when, and on what evidence, with resets between', () => {
+  const text = renderTrims(
+    'abc123',
+    [
+      {
+        at: '2026-09-24T12:31:05.000Z',
+        turn: 14,
+        callId: 'c1',
+        tool: 'shell',
+        input: '{"cmd":"cat src/app.ts"}',
+        outputChars: 12034,
+        need: { call: 0.2, output: 0.12 },
+        action: 'trim',
+        threshold: 0.5,
+        saved: '/tmp/a.txt',
+      },
+      { at: '2026-09-24T12:40:00.000Z', turn: 20, event: 'reset', reason: 'codex_compaction' },
+    ],
+    { color: false, width: 100 },
+  );
+  expect(text).toContain('session abc123');
+  expect(text).toContain('1 call trimmed · started over 1 time');
+  expect(text).toContain('turn 14 12:31:05  trimmed  shell  {"cmd":"cat src/app.ts"}');
+  expect(text).toContain('12,034 chars of output · Jev: output still needed 12%, call 20% (threshold 50%)');
+  expect(text).toContain('full output: /tmp/a.txt');
+  expect(text).toContain('turn 20 12:40:00  started over: Codex compacted its history');
+  expect(renderTrims('x', [], { color: false })).toContain('Nothing trimmed in this session yet.');
+  const list = renderTrimSessions([{ id: 'abc123', modified: new Date('2026-09-24T12:31:00Z'), trims: 3 }], {
+    color: false,
+  });
+  expect(list).toContain('abc123            2026-09-24 12:31  3');
 });

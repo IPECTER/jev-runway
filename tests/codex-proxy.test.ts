@@ -949,3 +949,72 @@ it('converts removed tokens at the rate the upstream counted new items', async (
   expect(rate).toBeLessThan(0.8);
   expect(result.billedInputTokensRemoved).toBe(Math.round(result.estimatedInputTokensRemoved * rate));
 });
+
+it('writes each trim once to the session ledger, with its turn and evidence, and notes when the view starts over', async () => {
+  let refuse = false;
+  const upstream = await listen(
+    createServer(async (request, response) => {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      if (refuse && body.includes('Jev Runway truncated')) {
+        response.writeHead(400);
+        response.end('{"error":"refused"}');
+        return;
+      }
+      response.end(COMPLETED);
+    }),
+  );
+  const archiveDir = mkdtempSync(join(tmpdir(), 'jev-runway-ledger-'));
+  const proxy = await listen(
+    createCodexProxy({
+      upstream,
+      archiveDir,
+      asker: () => ({
+        async ask(_state: unknown, questions: object) {
+          return {
+            answers: Object.fromEntries(
+              Object.keys(questions).map(id => [
+                id,
+                { type: 'noul' as const, noul: id.startsWith('call_') ? 0.2 : 0.1 },
+              ]),
+            ),
+          };
+        },
+      }),
+    }),
+  );
+  const send = () =>
+    fetch(`${proxy}/v1/responses`, {
+      method: 'POST',
+      headers: { session_id: 'session-ledger' },
+      body: JSON.stringify(payload()),
+    }).then(response => response.text());
+  await send();
+  await evaluated(proxy);
+  await send();
+  await send();
+  const { ledgerPath } = await import('../src/sessions.js');
+  const read = () =>
+    readFileSync(ledgerPath(archiveDir, 'session-ledger'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+  // The call's record is kept whatever Jev said, and the ledger keeps what Jev said: 20%, not 100%.
+  expect(read()).toEqual([
+    expect.objectContaining({
+      turn: 2,
+      callId: 'old',
+      tool: 'read',
+      input: '{}',
+      outputChars: 'old irrelevant log '.repeat(3_000).length,
+      need: { call: 0.2, output: 0.1 },
+      action: 'trim',
+      threshold: 0.5,
+      saved: expect.stringContaining(archiveDir),
+      requestId: expect.any(String),
+    }),
+  ]);
+  refuse = true;
+  await send();
+  expect(read().at(-1)).toMatchObject({ turn: 4, event: 'reset', reason: 'upstream_refused' });
+});

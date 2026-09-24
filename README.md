@@ -102,6 +102,7 @@ supports_websockets = false
 | `uninstall` | Stop the service, restore your previous Codex connection, and remove Runway |
 | `start [--upstream URL]` | Run in the foreground without changing Codex's configuration |
 | `status [--details] [--watch] [--json] [--session ID]` | Savings, quality signals, and health |
+| `trims [--session ID] [--json]` | Which tool outputs were trimmed, when, and on what evidence |
 | `auth set` | Choose a provider and save a verified key |
 | `auth check` · `auth status` | Test the key with a small Jev request, or just show which one is used |
 | `auth reset [--yes]` | Remove the saved key |
@@ -170,13 +171,14 @@ jev-runway install --upstream http://127.0.0.1:8787/v1
 
 - Runway listens on `127.0.0.1` only, and forwards your authorization headers to the upstream you configured.
 - To decide what to trim, it sends Jev the conversation's text and tool inputs, with tool output reduced to short size notes. Do not use Runway if that conflicts with your data policy.
-- Trimmed outputs are saved under `~/.codex/jev-runway/archive/`, readable only by you, and deleted a week after the session last saved one.
+- Trimmed outputs are saved under `~/.codex/jev-runway/archive/`, readable only by you, and deleted a week after the session last saved one. Each session's trim ledger (`trims.jsonl`, which includes the first 200 characters of each trimmed call's input) lives beside them and goes with them.
 - Metrics and the debug log never contain prompts, tool output, headers, or keys.
 
 ## Troubleshooting
 
 - **Codex does not seem to use Runway.** Check **Codex** under Connection in `status`, and start a new Codex task.
 - **`status` shows Jev failures.** Run `jev-runway auth check`. A 402 from TypeSafe means the account needs credits; occasional 503s from Vercel are retried automatically.
+- **A task went wrong after a trim.** Run `jev-runway trims` to find the session, then `jev-runway trims --session ID` with that ID or the Codex session ID. Each entry shows the turn that first went out without a tool's full output, what the call ran, the probabilities Jev gave, and where the full output is saved. It tells a model mistake apart from a trim that removed something the model still needed.
 - **Something else.** Turn on the debug log, reproduce the problem, and read the last lines. Turn it off again with `install --no-debug`.
 
   ```sh

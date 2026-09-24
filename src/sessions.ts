@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { callFingerprints, type View } from './responses.js';
 
 // ponytail: in-memory; a restart forgets every session's view, so Codex's full history goes out again.
@@ -27,6 +27,10 @@ export type Session = {
   dropped: Set<string>;
   archived: Set<string>;
   lastSent?: Sent;
+  /** Model requests seen in this session since Runway started, the turn number the trim ledger uses. */
+  turns: number;
+  /** Calls already written to the trim ledger since the view last started over. */
+  logged: Set<string>;
 };
 /** A request as sent: the view it went out with, Runway's estimate of its tokens, and the upstream's count. */
 type Sent = { view: View; estimated: number; billed: number };
@@ -55,6 +59,8 @@ export class Sessions {
       revisited: new Set(),
       dropped: new Set(),
       archived: new Set(),
+      turns: 0,
+      logged: new Set(),
     };
     this.sessions.delete(id);
     this.sessions.set(id, session);
@@ -121,6 +127,23 @@ export function calibrationSample(session: Session, sent: Sent): { billed: numbe
   if (!last || last.view !== sent.view || sent.estimated <= last.estimated || sent.billed <= last.billed)
     return undefined;
   return { billed: sent.billed - last.billed, estimated: sent.estimated - last.estimated };
+}
+
+/** The session's trim ledger: a JSON line for each call trimmed, and for each time the view started over. */
+export function ledgerPath(archiveDir: string, sessionId: string): string {
+  return join(archiveDir, digest(sessionId), 'trims.jsonl');
+}
+
+/** Appends to the session's trim ledger, readable only by the user, beside the outputs it saved. */
+export function recordTrims(archiveDir: string, sessionId: string, lines: readonly object[]): void {
+  if (!lines.length) return;
+  const file = ledgerPath(archiveDir, sessionId);
+  try {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    appendFileSync(file, lines.map(line => `${JSON.stringify(line)}\n`).join(''), { mode: 0o600 });
+  } catch {
+    // The ledger explains trims; a write that fails must not fail the request.
+  }
 }
 
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 16);

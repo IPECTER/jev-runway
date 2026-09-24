@@ -49,6 +49,21 @@ export interface ViewResult {
   reason: string;
   /** A local estimate, not billed usage or net cost savings. Reasoning is opaque and not in it. */
   estimatedTokensRemoved: number;
+  /** Each call this request went out without in full, and the evidence for it. */
+  trimmed: Trim[];
+}
+/** One call a request went out without in full: what it ran, how much output it had, and Jev's probabilities. */
+export interface Trim {
+  callId: string;
+  tool: string;
+  /** The call's input, cut to 200 characters. */
+  input: string;
+  outputChars: number;
+  /** Jev's probabilities that the call, and its whole output, still mattered. */
+  need: { call: number; output: number };
+  action: 'trim' | 'remove';
+  /** Where the full output was saved, when it was. */
+  saved?: string;
 }
 export interface EvaluationResult {
   /** The session's new view; the same object when nothing was decided. */
@@ -205,10 +220,11 @@ function rewrite(
   verdicts: readonly Verdict[],
   headChars: number,
   options: ViewOptions,
-): { payload: Item; reasoningRemoved: number } {
+): { payload: Item; reasoningRemoved: number; saved: Map<string, string> } {
   const archive = options.archive;
   const remove = new Set<number>();
   const replace = new Map<number, Item>();
+  const saved = new Map<string, string>();
   verdicts.forEach((judged, index) => {
     const step = parsed.steps[index]!;
     if (judged.action === 'remove') {
@@ -218,7 +234,9 @@ function rewrite(
       const original = parsed.entries[step.outputAt]!.output!.text;
       const replaceText = parsed.rewriters.get(step.callId);
       if (!replaceText || original === trimmedOutput(original, headChars)) return;
-      const output = trimmedOutput(original, headChars, archive?.(step.callId, original));
+      const where = archive?.(step.callId, original);
+      if (where) saved.set(step.callId, where);
+      const output = trimmedOutput(original, headChars, where);
       replace.set(step.outputAt, { ...parsed.input[step.outputAt]!, output: replaceText(output) });
     }
   });
@@ -248,6 +266,7 @@ function rewrite(
       input: input.flatMap((item, index) => (remove.has(index) ? [] : [replace.get(index) ?? item])),
     },
     reasoningRemoved,
+    saved,
   };
 }
 
@@ -293,18 +312,39 @@ export function isCodexCompaction(payload: Item): boolean {
 
 /** Applies a session's view to one request, the way a replaced transcript would read. Asks Jev nothing. */
 export function applyView(payload: Item, view: View, options: ViewOptions = {}): ViewResult {
-  const unchanged = (reason: string): ViewResult => ({ payload, changed: false, reason, estimatedTokensRemoved: 0 });
+  const unchanged = (reason: string): ViewResult => ({
+    payload,
+    changed: false,
+    reason,
+    estimatedTokensRemoved: 0,
+    trimmed: [],
+  });
   if (!view.size) return unchanged('no_view');
   const s = settings(options);
   const parsed = parse(payload, s.recentItems);
   if ('reason' in parsed) return unchanged(parsed.reason);
   const verdicts = parsed.steps.map(step => verdict(step, view.get(step.callId) ?? KEEP, s.threshold));
   if (verdicts.every(judged => judged.action === 'keep')) return unchanged('no_view');
-  const { payload: next, reasoningRemoved } = rewrite(payload, parsed, verdicts, s.headChars, options);
+  const { payload: next, reasoningRemoved, saved } = rewrite(payload, parsed, verdicts, s.headChars, options);
   const removed = textTokens(payload) - textTokens(next);
-  return removed > 0 || reasoningRemoved
-    ? { payload: next, changed: true, reason: 'compacted', estimatedTokensRemoved: removed }
-    : unchanged('no_reduction');
+  if (removed <= 0 && !reasoningRemoved) return unchanged('no_reduction');
+  const trimmed = parsed.steps.flatMap((step, index): Trim[] => {
+    const judged = verdicts[index]!;
+    if (judged.action === 'keep') return [];
+    const input = typeof step.input.arguments === 'string' ? step.input.arguments : JSON.stringify(step.input);
+    return [
+      {
+        callId: step.callId,
+        tool: step.name,
+        input: input.length > 200 ? `${input.slice(0, 199)}…` : input,
+        outputChars: step.outputChars,
+        need: { call: judged.jevCall ?? judged.call, output: judged.output },
+        action: judged.action,
+        ...(saved.has(step.callId) && { saved: saved.get(step.callId) }),
+      },
+    ];
+  });
+  return { payload: next, changed: true, reason: 'compacted', estimatedTokensRemoved: removed, trimmed };
 }
 
 /**
@@ -341,7 +381,13 @@ export async function evaluateView(
   const judge = async (entries: Entry[]): Promise<void> => {
     for (const judged of await judgeSteps(entries, counted, { task: parsed.task, ...options, decided: view })) {
       if (judged.action === 'keep') next.delete(judged.callId);
-      else next.set(judged.callId, { call: options.keepCalls ? 1 : judged.call, output: judged.output });
+      else
+        next.set(
+          judged.callId,
+          options.keepCalls
+            ? { call: 1, output: judged.output, jevCall: judged.call }
+            : { call: judged.call, output: judged.output },
+        );
     }
   };
   // Jev sees the whole history when it fits. When the route's budget cannot hold it, as Vercel's cannot

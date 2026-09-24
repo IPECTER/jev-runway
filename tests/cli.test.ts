@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { debugArguments, statusArguments, upstreamArgument } from '../src/cli.js';
+import { debugArguments, readLedger, statusArguments, trimsArguments, upstreamArgument } from '../src/cli.js';
 import {
   inspectCodexConfig,
   proxyEdits,
@@ -277,4 +277,15 @@ test('a download is accepted only when it matches the sha512 in npm integrity', 
   expect(matchesIntegrity(data, `sha1-abc ${good}`)).toBe(true);
   expect(matchesIntegrity(new TextEncoder().encode('tampered'), good)).toBe(false);
   expect(matchesIntegrity(data, 'sha1-only')).toBe(false);
+});
+
+test('trims takes a session and --json, and a half-written ledger line is skipped', () => {
+  expect(trimsArguments([])).toEqual({ json: false, session: undefined });
+  expect(trimsArguments(['--session', 'abc', '--json'])).toEqual({ json: true, session: 'abc' });
+  expect(() => trimsArguments(['--session'])).toThrow('Usage: jev-runway trims');
+  const file = join(tmpdir(), `jev-runway-ledger-${process.pid}.jsonl`);
+  writeFileSync(file, '{"turn":1,"callId":"a"}\n{"turn":2,"callI');
+  expect(readLedger(file)).toEqual([{ turn: 1, callId: 'a' }]);
+  expect(readLedger(`${file}.missing`)).toEqual([]);
+  rmSync(file);
 });

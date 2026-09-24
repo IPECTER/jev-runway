@@ -15,6 +15,7 @@ import {
   JevError,
 } from './diagnostics.js';
 import { JEV_BUDGETS, type JevAsker, jevCaller, jevRoute } from './jev.js';
+import { settings } from './judge.js';
 import { type Counters, Metrics, UsageObserver } from './metrics.js';
 import {
   applyView,
@@ -30,6 +31,7 @@ import {
   countDrops,
   countRepeats,
   pruneArchive,
+  recordTrims,
   type Session,
   Sessions,
 } from './sessions.js';
@@ -214,6 +216,7 @@ export function createCodexProxy(options: ProxyOptions) {
     encoding: string | undefined,
     sessionId: string | undefined,
     counters: Counters | undefined,
+    requestId: string,
   ): Prepared | undefined {
     if (!Buffer.isBuffer(received)) {
       metrics.incrementBypass(counters, 'body_too_large');
@@ -227,6 +230,7 @@ export function createCodexProxy(options: ProxyOptions) {
     }
     const session = sessions.get(sessionId);
     const view = session.view;
+    session.turns++;
     countRepeats(session, payload, counter => metrics.increment(counters, counter));
     const viewed = applyView(payload, view, {
       ...options.compaction,
@@ -238,6 +242,19 @@ export function createCodexProxy(options: ProxyOptions) {
     }
     metrics.increment(counters, 'compacted');
     metrics.increment(counters, 'estimatedInputTokensRemoved', viewed.estimatedTokensRemoved);
+    // Each trim is written once, with the turn that first went out without the output, so a run that
+    // fails later can be traced to what the model could no longer see.
+    const fresh = viewed.trimmed.filter(trim => !session.logged.has(trim.callId));
+    for (const trim of fresh) session.logged.add(trim.callId);
+    if (options.archiveDir) {
+      const at = new Date().toISOString();
+      const threshold = settings(options.compaction).threshold;
+      recordTrims(
+        options.archiveDir,
+        sessionId,
+        fresh.map(trim => ({ at, turn: session.turns, requestId, threshold, ...trim })),
+      );
+    }
     return {
       payload,
       sessionId,
@@ -247,6 +264,17 @@ export function createCodexProxy(options: ProxyOptions) {
       body: Buffer.from(JSON.stringify(viewed.payload)),
       saved: viewed.estimatedTokensRemoved,
     };
+  }
+
+  /** Drops the session's view, and says so in the ledger, so the trims that follow are written afresh. */
+  function startOver(sessionId: string, session: Session, reason: string, requestId: string) {
+    session.view = new Map();
+    session.logged.clear();
+    if (options.archiveDir) {
+      recordTrims(options.archiveDir, sessionId, [
+        { at: new Date().toISOString(), turn: session.turns, requestId, event: 'reset', reason },
+      ]);
+    }
   }
 
   const server = createServer(async (request, response) => {
@@ -306,7 +334,7 @@ export function createCodexProxy(options: ProxyOptions) {
       const received = await readBody(request, options.maxBodyBytes ?? MAX_BODY_BYTES);
       const prepared =
         endpoint === 'responses'
-          ? prepare(received, request.headers['content-encoding'], attributed.id, counters)
+          ? prepare(received, request.headers['content-encoding'], attributed.id, counters, trace.requestId)
           : undefined;
       if (controller.signal.aborted) return;
       let compacted = prepared?.body !== undefined;
@@ -359,7 +387,7 @@ export function createCodexProxy(options: ProxyOptions) {
         compacted = false;
         // The upstream refused the rewrite: the session goes back to Codex's history as it is, and Jev
         // decides again only once new output arrives, rather than repeating the refused decision now.
-        if (prepared!.session) prepared!.session.view = new Map();
+        if (prepared!.session) startOver(prepared!.sessionId!, prepared!.session, 'upstream_refused', trace.requestId);
         upstreamResponse = await send(received, false);
         metrics.recordUpstreamResponse(counters);
       }
@@ -421,7 +449,7 @@ export function createCodexProxy(options: ProxyOptions) {
               if (result !== 'completed' || !session) return;
               // Codex's own compaction replaces its history with a summary, so the session's view no longer applies.
               if (isCodexCompaction(prepared.payload)) {
-                session.view = new Map();
+                startOver(prepared.sessionId!, session, 'codex_compaction', trace.requestId);
                 session.seen.clear();
               } else compactBetweenTurns(session, prepared.payload, counters, trace);
             },

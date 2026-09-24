@@ -345,6 +345,86 @@ export function wrap(text: string, width: number, indent = 0): string[] {
   return lines.map(line => ' '.repeat(indent) + line);
 }
 
+/** One line of a trim ledger, as `jev-runway trims` reads it back. */
+export type LedgerLine = Values;
+const home = (path: string) =>
+  process.env.HOME && path.startsWith(process.env.HOME) ? `~${path.slice(process.env.HOME.length)}` : path;
+const REASONS: Values = {
+  codex_compaction: 'Codex compacted its history',
+  upstream_refused: 'the upstream refused a trimmed request',
+};
+
+/**
+ * A session's trims in the order they happened: for each call, the turn that first went out without its full
+ * output, what the call ran, and the probabilities Jev gave that the call and its output still mattered.
+ */
+export function renderTrims(
+  session: string,
+  lines: readonly LedgerLine[],
+  options: { width?: number; color?: boolean } = {},
+): string {
+  const width = Math.max(40, Math.min(options.width ?? process.stdout.columns ?? 80, 120));
+  const p = paint(options.color);
+  const trims = lines.filter(line => line.event === undefined);
+  const resets = lines.length - trims.length;
+  const out = [
+    `${p.bold('◆ Jev Runway trims')}${p.dim(`  session ${clean(session)}`)}`,
+    p.dim(
+      `  ${trims.length} ${trims.length === 1 ? 'call' : 'calls'} trimmed${resets ? ` · started over ${resets} ${resets === 1 ? 'time' : 'times'}` : ''}`,
+    ),
+  ];
+  if (!lines.length) out.push('', '  Nothing trimmed in this session yet.');
+  for (const line of lines) {
+    const when = typeof line.at === 'string' ? line.at.slice(11, 19) : '';
+    const turn = `turn ${exact(line.turn)}`;
+    if (line.event === 'reset') {
+      out.push(
+        '',
+        `  ${p.accent(turn)} ${p.dim(when)}  ${p.warn('started over')}: ${clean(REASONS[String(line.reason)] ?? line.reason)}`,
+      );
+      continue;
+    }
+    const need = object(line.need);
+    const input = clean(line.input);
+    const head = `  ${p.accent(turn)} ${p.dim(when)}  ${line.action === 'remove' ? 'removed' : 'trimmed'}  ${p.bold(clean(line.tool))}  `;
+    const room = Math.max(10, width - visible(head));
+    out.push(
+      '',
+      head +
+        (Array.from(input).length > room
+          ? `${Array.from(input)
+              .slice(0, room - 1)
+              .join('')}…`
+          : input),
+    );
+    out.push(
+      `    ${exact(line.outputChars)} chars of output · Jev: output still needed ${percent(number(need.output) ?? 0)}, call ${percent(number(need.call) ?? 0)}` +
+        p.dim(` (threshold ${percent(number(line.threshold) ?? 0.5)})`),
+    );
+    if (typeof line.saved === 'string') out.push(p.dim(`    full output: ${home(clean(line.saved))}`));
+  }
+  return out.join('\n');
+}
+
+/** The sessions with a trim ledger, most recent first. */
+export function renderTrimSessions(
+  sessions: readonly { id: string; modified: Date; trims: number }[],
+  options: { color?: boolean } = {},
+): string {
+  const p = paint(options.color);
+  if (!sessions.length) return `${p.bold('◆ Jev Runway trims')}\n\n  No trims recorded yet.`;
+  return [
+    p.bold('◆ Jev Runway trims'),
+    '',
+    p.dim(`  ${'SESSION'.padEnd(18)}${'LAST WRITTEN'.padEnd(18)}TRIMS`),
+    ...sessions.map(
+      s => `  ${s.id.padEnd(18)}${s.modified.toISOString().slice(0, 16).replace('T', ' ').padEnd(18)}${exact(s.trims)}`,
+    ),
+    '',
+    p.dim('  Show one: jev-runway trims --session ID  (the ID above, or a Codex session ID)'),
+  ].join('\n');
+}
+
 export function renderHelp(p: Paint = paint()): string {
   const command = (name: string, text: string, flags: [string, string][] = []) => [
     `  ${p.bold(name.padEnd(13))}${text}`,
@@ -376,6 +456,10 @@ export function renderHelp(p: Paint = paint()): string {
       ['--watch', 'refresh every 2 seconds'],
       ['--json', 'machine-readable output'],
       ['--session ID', 'one Codex session only'],
+    ]),
+    ...command('trims', 'Show which tool outputs were trimmed, when, and on what evidence', [
+      ['--session ID', 'one session, oldest trim first'],
+      ['--json', 'the ledger lines as JSON'],
     ]),
     '',
     p.accent(p.bold('JEV KEY')),

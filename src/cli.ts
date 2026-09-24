@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // The jev-runway command: install, update, and remove the background service, show its status, and manage the Jev key.
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { confirm, intro, isCancel, log, outro, spinner } from '@clack/prompts';
 import {
@@ -41,7 +41,17 @@ import {
   writeAtomic,
   writeLauncher,
 } from './service.js';
-import { colorEnabled, isTerminal, paint, renderHelp, renderStatus } from './terminal.js';
+import { digest } from './sessions.js';
+import {
+  colorEnabled,
+  isTerminal,
+  type LedgerLine,
+  paint,
+  renderHelp,
+  renderStatus,
+  renderTrimSessions,
+  renderTrims,
+} from './terminal.js';
 import { update } from './update.js';
 
 export function upstreamArgument(args: string[]): string | undefined {
@@ -399,6 +409,67 @@ function usage(): void {
   process.stdout.write(`${renderHelp()}\n`);
 }
 
+export function trimsArguments(args: string[]): { json: boolean; session?: string } {
+  const options = { json: false, session: undefined as string | undefined };
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index];
+    if (flag === '--json' && !options.json) {
+      options.json = true;
+      continue;
+    }
+    if (
+      flag === '--session' &&
+      options.session === undefined &&
+      args[index + 1] &&
+      !args[index + 1]!.startsWith('--')
+    ) {
+      options.session = args[++index];
+      continue;
+    }
+    throw new Error('Usage: jev-runway trims [--session SESSION_ID] [--json]');
+  }
+  return options;
+}
+
+/** Reads a trim ledger, skipping any line a crash left half written. */
+export function readLedger(file: string): LedgerLine[] {
+  if (!existsSync(file)) return [];
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .flatMap(line => {
+      try {
+        return line ? [JSON.parse(line) as LedgerLine] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/** Shows the trim ledgers: which sessions have one, or one session's trims with their evidence. */
+function trims(options: ReturnType<typeof trimsArguments>): void {
+  const archive = join(codexHome(), 'jev-runway', 'archive');
+  const json = options.json || !isTerminal();
+  if (!options.session) {
+    const sessions = (existsSync(archive) ? readdirSync(archive) : [])
+      .filter(id => existsSync(join(archive, id, 'trims.jsonl')))
+      .map(id => {
+        const file = join(archive, id, 'trims.jsonl');
+        return {
+          id,
+          modified: statSync(file).mtime,
+          trims: readLedger(file).filter(line => line.event === undefined).length,
+        };
+      })
+      .sort((a, b) => b.modified.getTime() - a.modified.getTime());
+    process.stdout.write(`${json ? JSON.stringify(sessions) : renderTrimSessions(sessions)}\n`);
+    return;
+  }
+  // The ledger folder is named for a digest of the Codex session ID, so either one finds it.
+  const id = existsSync(join(archive, options.session, 'trims.jsonl')) ? options.session : digest(options.session);
+  const lines = readLedger(join(archive, id, 'trims.jsonl'));
+  process.stdout.write(`${json ? JSON.stringify(lines) : renderTrims(id, lines)}\n`);
+}
+
 async function main(args = process.argv.slice(2)): Promise<void> {
   if (args[0] === '--help' || args[0] === '-h' || args[0] === 'help') {
     usage();
@@ -414,6 +485,9 @@ async function main(args = process.argv.slice(2)): Promise<void> {
       return;
     case 'status':
       await status(statusArguments(args.slice(1)));
+      return;
+    case 'trims':
+      trims(trimsArguments(args.slice(1)));
       return;
     case 'install':
       await install(args.slice(1));

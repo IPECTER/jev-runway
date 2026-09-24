@@ -747,7 +747,13 @@ it('retries an evaluator outage twice between turns, after Retry-After, so 503s 
       body: JSON.stringify(payload()),
     }).then(response => response.text());
   await send();
-  expect(await evaluated(proxy)).toMatchObject({ evaluations: { evaluated: 1 }, jevRequests: 3, jevFailures: 2 });
+  expect(await evaluated(proxy)).toMatchObject({
+    evaluations: { evaluated: 1 },
+    jevRequests: 1,
+    jevRetries: 2,
+    jevFailures: 0,
+    jevHttpStatus: {},
+  });
   await send();
   expect(calls).toBe(3);
   expect(received[1]).toContain('Jev Runway truncated');

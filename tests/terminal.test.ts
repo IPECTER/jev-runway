@@ -74,6 +74,7 @@ test('turns failures into problems with what to do', () => {
         errors: 5,
         jevRequests: 20,
         jevFailures: 6,
+        jevRetries: 4,
         jevHttpStatus: { 503: 6 },
         jevFailureReasons: { http: 6 },
         errorBreakdown: { upstream_transport: 5, client_cancelled: 2 },
@@ -82,7 +83,9 @@ test('turns failures into problems with what to do', () => {
     ),
     plain,
   );
-  expect(text).toContain('6 (HTTP 503 ×6) · retried');
+  expect(text).toContain('20 calls');
+  expect(text).toContain('4 retried');
+  expect(text).toContain('6 (HTTP 503 ×6) · after retries');
   expect(text).toContain('Jev failed on 30% of calls. Run jev-runway auth check.');
   expect(text).toContain('5 requests could not reach the upstream (http://127.0.0.1:8787/v1)');
   expect(text).toContain('Codex is not sending requests through Runway. Run jev-runway install.');

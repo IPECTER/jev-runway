@@ -53,6 +53,7 @@ function counters() {
       calibrationEstimatedTokens: 0,
       jevRequests: 0,
       jevFailures: 0,
+      jevRetries: 0,
       compactionTimeMs: 0,
       callsObserved: 0,
       callsDropped: 0,

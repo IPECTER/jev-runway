@@ -189,9 +189,10 @@ export function renderStatus(
     const evaluations = object(metrics.evaluations);
     const jevCalls = number(metrics.jevRequests) ?? 0;
     const jevFailures = number(metrics.jevFailures) ?? 0;
+    const jevRetries = number(metrics.jevRetries) ?? 0;
     row(
       'Evaluations',
-      `${exact(evaluations.evaluated ?? 0)} between turns · ${exact(jevCalls)} calls · ${duration(object(metrics.jevLatencyMs).average)} each`,
+      `${exact(evaluations.evaluated ?? 0)} between turns · ${exact(jevCalls)} calls · ${duration(object(metrics.jevLatencyMs).average)} each${jevRetries ? p.dim(` · ${exact(jevRetries)} retried`) : ''}`,
     );
     if (jevFailures > 0) {
       const statuses = Object.entries(object(metrics.jevHttpStatus)).map(
@@ -202,7 +203,7 @@ export function renderStatus(
         .map(([cause, value]) => `${clean(cause)} ×${exact(value)}`);
       row(
         'Failed',
-        `${p.warn(exact(jevFailures))} ${p.dim(`(${[...statuses, ...causes].join(', ')}) · retried; a failed evaluation keeps the last decisions`)}`,
+        `${p.warn(exact(jevFailures))} ${p.dim(`(${[...statuses, ...causes].join(', ')}) · after retries; a failed evaluation keeps the last decisions`)}`,
       );
       if (jevCalls >= 10 && jevFailures / jevCalls > 0.2)
         notices.push(

@@ -133,13 +133,14 @@ export function createCodexProxy(options: ProxyOptions) {
   /** The request budget of the Jev route in use, TypeSafe's own API or Vercel AI Gateway. */
   const budget = () => JEV_BUDGETS[jevRoute({ ...loadDaemonCredential() }).provider];
 
-  /** A logged Jev caller that retries when the evaluator was briefly unavailable. */
+  /**
+   * A logged Jev caller that retries when the evaluator was briefly unavailable. Metrics count each
+   * call once, as failed only when its retries failed too; the debug log shows every attempt.
+   */
   function jev(signal: AbortSignal, timeout: number, counters: Counters | undefined, trace: Trace): JevAsker {
-    const client = metrics.instrument(
+    const client =
       options.asker?.(signal) ??
-        jevCaller({ ...loadDaemonCredential(), model: process.env.JEV_RUNWAY_MODEL, timeoutMs: timeout, signal }),
-      counters,
-    );
+      jevCaller({ ...loadDaemonCredential(), model: process.env.JEV_RUNWAY_MODEL, timeoutMs: timeout, signal });
     const attempt: JevAsker['ask'] = async (state, questions) => {
       const started = performance.now();
       let cause: FailureCause | 'ok' = 'ok';
@@ -154,7 +155,7 @@ export function createCodexProxy(options: ProxyOptions) {
         diagnostics.emit('jev', { ...trace, phase: 'ask', cause, statusCode, durationMs: performance.now() - started });
       }
     };
-    return {
+    const retrying: JevAsker = {
       ask: async (state, questions) => {
         for (let tried = 0; ; tried++) {
           try {
@@ -162,6 +163,7 @@ export function createCodexProxy(options: ProxyOptions) {
           } catch (error) {
             if (!(error instanceof JevError) || !RETRYABLE.has(error.statusCode ?? 0) || tried >= RETRY.retries)
               throw error;
+            metrics.increment(counters, 'jevRetries');
             const backoff = RETRY.delayMs * 2 ** tried * (1 - Math.random() * 0.25);
             await new Promise(resolve =>
               setTimeout(resolve, Math.min(RETRY.maxDelayMs, error.retryAfterMs ?? backoff)),
@@ -170,6 +172,7 @@ export function createCodexProxy(options: ProxyOptions) {
         }
       },
     };
+    return metrics.instrument(retrying, counters);
   }
 
   /**
